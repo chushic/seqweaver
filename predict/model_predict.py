@@ -6,10 +6,7 @@ import math
 import os
 from time import time
 import warnings
-import copy
 
-
-import pandas as pd
 import numpy as np
 import pyfaidx
 import torch
@@ -502,7 +499,15 @@ class AnalyzeSequences(object):
                               len(self.reference_sequence.BASES_ARR)))
         batch_ids = []
         for i, fasta_record in enumerate(fasta_file):
-            cur_sequence = self._pad_or_truncate_sequence(str(fasta_record))
+            cur_sequence = str(fasta_record)
+
+            if len(cur_sequence) < self.sequence_length:
+                cur_sequence = _pad_sequence(cur_sequence,
+                                             self.sequence_length,
+                                             self.reference_sequence.UNK_BASE)
+            elif len(cur_sequence) > self.sequence_length:
+                cur_sequence = _truncate_sequence(cur_sequence, self.sequence_length)
+
             cur_sequence_encoding = self.reference_sequence.sequence_to_encoding(
                 cur_sequence)
 
@@ -526,22 +531,19 @@ class AnalyzeSequences(object):
 
 
     def get_predictions(self,
-                        input,
-                        output_dir=None,
+                        input_path,
+                        output_dir,
                         output_format="tsv",
                         strand_index=None):
         """
-        Get model predictions for sequences specified as a raw sequence,
-        FASTA, or BED file.
+        Get model predictions for sequences specified in a FASTA or BED file.
 
         Parameters
         ----------
-        input : str
-            A single sequence, or a path to the FASTA or BED file input.
-        output_dir : str, optional
-            Default is None. Output directory to write the model predictions.
-            If this is left blank a raw sequence input will be assumed, though
-            an output directory is required for FASTA and BED inputs.
+        input_path : str
+            Input path to the FASTA or BED file.
+        output_dir : str
+            Output directory to write the model predictions.
         output_format : {'tsv', 'hdf5'}, optional
             Default is 'tsv'. Choose whether to save TSV or HDF5 output files.
             TSV is easier to access (i.e. open with text editor/Excel) and
@@ -581,22 +583,15 @@ class AnalyzeSequences(object):
             or .tsv file will mark this sequence or region as `contains_unk = True`.
 
         """
-        if output_dir is None:
-            sequence = self._pad_or_truncate_sequence(input)
-            seq_enc = self.reference_sequence.sequence_to_encoding(sequence)
-            seq_enc = np.expand_dims(seq_enc, axis=0)  # add batch size of 1
-            return predict(self.model, seq_enc, use_cuda=self.use_cuda)
-        elif input.endswith('.fa') or input.endswith('.fasta'):
+        if input_path.endswith('.fa') or input_path.endswith('.fasta'):
             self.get_predictions_for_fasta_file(
-                input, output_dir, output_format=output_format)
+                input_path, output_dir, output_format=output_format)
         else:
             self.get_predictions_for_bed_file(
-                input,
+                input_path,
                 output_dir,
                 output_format=output_format,
                 strand_index=strand_index)
-
-        return None
 
     def in_silico_mutagenesis_predict(self,
                                       sequence,
@@ -903,7 +898,14 @@ class AnalyzeSequences(object):
 
         fasta_file = pyfaidx.Fasta(input_path)
         for i, fasta_record in enumerate(fasta_file):
-            cur_sequence = self._pad_or_truncate_sequence(str.upper(str(fasta_record)))
+            cur_sequence = str.upper(str(fasta_record))
+            if len(cur_sequence) < self.sequence_length:
+                cur_sequence = _pad_sequence(cur_sequence,
+                                             self.sequence_length,
+                                             self.reference_sequence.UNK_BASE)
+            elif len(cur_sequence) > self.sequence_length:
+                cur_sequence = _truncate_sequence(
+                    cur_sequence, self.sequence_length)
 
             # Generate mut sequences and base preds.
             mutated_sequences = in_silico_mutagenesis_sequences(
@@ -1053,7 +1055,6 @@ class AnalyzeSequences(object):
         batch_alt_seqs = []
         batch_ids = []
         t_i = time()
-        shuffled_df = pd.DataFrame(columns=range(218))
         for ix, (chrom, pos, name, ref, alt, strand) in enumerate(variants):
             # centers the sequence containing the ref allele based on the size
             # of ref
@@ -1069,7 +1070,7 @@ class AnalyzeSequences(object):
                 chrom, pos, ref, alt, start, end,
                 ref_sequence_encoding,
                 self.reference_sequence)
-            #print(f"alt_seq_encoding shape: {alt_sequence_encoding.shape}")
+
             match = True
             seq_at_ref = None
             if len(ref) and len(ref) < self.sequence_length:
@@ -1111,55 +1112,25 @@ class AnalyzeSequences(object):
                     alt_sequence_encoding,
                     self.reference_sequence.BASES_ARR,
                     self.reference_sequence.COMPLEMENTARY_BASE_DICT)
-            
-
-            n_shuffle=30
-            shuffled = []
-            np.random.seed(10)
-            for i in range(n_shuffle):
-                temp = copy.deepcopy(ref_sequence_encoding)
-                core = temp[490:510]
-                np.random.shuffle(core)
-                temp[490:510] = core
-                shuffled.append(temp)
-            
-            #print("ref")
-            #print(np.transpose(ref_sequence_encoding[485:515]))
-            #print("shuffles:")
-            #for i in range(3):
-            #    print(np.transpose(shuffled[i][485:515]))
-            #    print("------------")
             batch_ref_seqs.append(ref_sequence_encoding)
             batch_alt_seqs.append(alt_sequence_encoding)
-            #print(f"alt batch shape: {len(batch_alt_seqs)}")
-            #print(f"shuffles shape: {len(shuffled)}")
-            #print(f"batch size ref/req batch size: {len(batch_ref_seqs)}/{self.batch_size}")
-            # if len(batch_ref_seqs) >= self.batch_size:
-            if len(batch_ref_seqs) >= 1:
-                shuffled_outputs = _handle_ref_alt_predictions(
+
+            if len(batch_ref_seqs) >= self.batch_size:
+                _handle_ref_alt_predictions(
                     self.model,
                     batch_ref_seqs,
                     batch_alt_seqs,
                     batch_ids,
                     reporters,
-                    use_cuda=self.use_cuda,
-                    shuffled=shuffled)
+                    use_cuda=self.use_cuda)
                 batch_ref_seqs = []
                 batch_alt_seqs = []
                 batch_ids = []
-                #print(shuffled_outputs.shape)
-                shuffled_outputs = pd.DataFrame(shuffled_outputs)
-                shuffled_outputs[217] = name
-                #print(shuffled_outputs.shape)
-                shuffled_df = pd.concat([shuffled_df, shuffled_outputs], axis=0)
-                #print(shuffled_df.shape)
 
             if ix and ix % 10000 == 0:
                 print("[STEP {0}]: {1} s to process 10000 variants.".format(
                     ix, time() - t_i))
                 t_i = time()
-        print(shuffled_df.shape)
-        shuffled_df.to_csv("shuffled_aso.tsv",index=False, header=False, sep="\t")
 
         if batch_ref_seqs:
             _handle_ref_alt_predictions(
@@ -1172,17 +1143,3 @@ class AnalyzeSequences(object):
 
         for r in reporters:
             r.write_to_file()
-        
-       
-
-    def _pad_or_truncate_sequence(self, sequence):
-        if len(sequence) < self.sequence_length:
-            sequence = _pad_sequence(
-                sequence,
-                self.sequence_length,
-                self.reference_sequence.UNK_BASE,
-            )
-        elif len(sequence) > self.sequence_length:
-            sequence = _truncate_sequence(sequence, self.sequence_length)
-
-        return sequence

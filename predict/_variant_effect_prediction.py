@@ -1,7 +1,6 @@
 import math
 
 import numpy as np
-import pandas as pd
 
 from ._common import _truncate_sequence
 from ._common import predict
@@ -272,8 +271,7 @@ def _handle_ref_alt_predictions(model,
                                 batch_alt_seqs,
                                 batch_ids,
                                 reporters,
-                                use_cuda=False,
-                                shuffled=None):
+                                use_cuda=False):
     """
     Helper method for variant effect prediction. Gets the model
     predictions and updates the reporters.
@@ -302,19 +300,8 @@ def _handle_ref_alt_predictions(model,
     batch_alt_seqs = np.array(batch_alt_seqs)
     ref_outputs = predict(model, batch_ref_seqs, use_cuda=use_cuda)
     alt_outputs = predict(model, batch_alt_seqs, use_cuda=use_cuda)
-
-    if shuffled:
-        #for shuffle in shuffled:
-        shuffled_outputs = predict(model, shuffled, use_cuda=use_cuda)
-        #print(f"shuffled outputs shape:{shuffled_outputs.shape}")    
-
-    #print(f"ref shape: {ref_outputs.shape}")
-    #print(f"alt shape: {alt_outputs.shape}")
-    #print(f"attributes{reporters[1].__dir__()}")
-    #print(f"output_path: {reporters[1]._output_path_prefix}")
     for r in reporters:
         if r.needs_base_pred:
             r.handle_batch_predictions(alt_outputs, batch_ids, ref_outputs)
         else:
             r.handle_batch_predictions(alt_outputs, batch_ids)
-    return shuffled_outputs
